@@ -1,3 +1,4 @@
+# Copied from https://github.com/karpathy/nanoGPT/blob/177d5f7dc5f44d6f373cd7767c2a9259d740436e/data/openwebtext/prepare.py
 # saves the openwebtext dataset to a binary file for training. following was helpful:
 # https://github.com/HazyResearch/flash-attention/blob/main/training/src/datamodules/language_modeling_hf.py
 
