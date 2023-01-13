@@ -103,10 +103,10 @@ def count_params(params: FrozenDict) -> int:
     return jax.tree_util.tree_reduce(lambda a, b: a + b, p)
 
 
-def not_bias(params: FrozenDict) -> FrozenDict:
+def param_decay_mask(params: FrozenDict) -> FrozenDict:
     """ pytree mask for non-bias parameters """
     flat_params = flax.traverse_util.flatten_dict(params)
-    flat_param_mask = {k: not k[-1].endswith('bias') for k in flat_params.keys()}
+    flat_param_mask = {k: k[-1] not in ('bias', 'embedding', 'scale') for k in flat_params.keys()}
     param_mask = flax.traverse_util.unflatten_dict(flat_param_mask)
     return frozen_dict.freeze(param_mask)
 
@@ -151,7 +151,7 @@ if __name__ == "__main__":
 
     optimizer = optax.chain(
         # Apply weight decay only to non-bias parameters
-        optax.add_decayed_weights(config.weight_decay, mask=not_bias(params)),
+        optax.add_decayed_weights(config.weight_decay, mask=param_decay_mask(params)),
         optax.adamw(learning_rate, *config.betas, weight_decay=0.0),
     )
     train_state = TrainState.create(
