@@ -17,7 +17,7 @@ class GPTConfig:
     num_embeds: int = 768
     dropout_rate: float = 0.1
     deterministic: Optional[bool] = None
-    dtype: Optional[Any] = None
+    dtype: Optional[str] = None
 
 
 class SelfAttention(nn.Module):
