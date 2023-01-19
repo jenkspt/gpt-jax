@@ -19,7 +19,7 @@ from model import GPT, GPTConfig
 
 
 @dataclass(frozen=True)
-class WandBConfig:
+class WandbConfig:
     entity: str = 'jenkspt'
     project: str = 'owt'
     name: str = 'test'
@@ -54,7 +54,7 @@ class TrainConfig:
     betas: Tuple[float, float] = (0.9, 0.95)
     learning_rate: Union[float, CosineDecayScheduleConfig] = field(default_factory=CosineDecayScheduleConfig)
     # wandb logging
-    wandb: Optional[WandBConfig] = field(default_factory=WandBConfig)
+    wandb: Optional[WandbConfig] = field(default_factory=WandbConfig)
     # model
     model: GPTConfig = field(default_factory=GPTConfig)
 
