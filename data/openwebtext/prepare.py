@@ -2,6 +2,7 @@
 # saves the openwebtext dataset to a binary file for training. following was helpful:
 # https://github.com/HazyResearch/flash-attention/blob/main/training/src/datamodules/language_modeling_hf.py
 
+from multiprocessing import cpu_count
 from tqdm import tqdm
 import numpy as np
 import tiktoken
@@ -9,7 +10,7 @@ from datasets import load_dataset # huggingface datasets
 
 # number of workers in .map() call
 # good number to use is ~order number of cpu cores // 2
-num_proc = 8
+num_proc = cpu_count() // 2
 
 # takes 54GB in huggingface .cache dir, about 8M documents (8,013,769)
 dataset = load_dataset("openwebtext")
