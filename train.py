@@ -1,6 +1,7 @@
 from typing import Tuple, Optional, Union
 from dataclasses import dataclass, field, asdict
 from functools import partial
+from pathlib import Path
 import wandb
 import numpy as np
 import tyro
@@ -13,7 +14,6 @@ from flax.training import checkpoints
 from flax.training.train_state import TrainState
 from flax.jax_utils import replicate, unreplicate
 import optax
-import tensorflow as tf
 
 from model import GPT, GPTConfig
 
@@ -38,6 +38,8 @@ class CosineDecayScheduleConfig:
 class TrainConfig:
     seed: int = 555
     out_dir: str = 'out'
+    train_path: Path = Path('train.bin')
+    val_path: Path = Path('val.bin')
     eval_interval: int = 500
     #log_interval: int = 1
     eval_iters: int = 50
@@ -85,14 +87,17 @@ def eval_step(state: TrainState, tokens: jnp.ndarray, rngs: dict) -> jnp.ndarray
     return loss
 
 
-def evaluate(state: TrainState, dataset, key) -> jnp.ndarray:
+def evaluate(state: TrainState, data: np.memmap, batch_size: int, block_size: int, max_steps: int, key) -> jnp.ndarray:
 
     # we want a different dropout rng key for each device
     keys = jax.random.split(key, jax.device_count())
-    keys_dropout = jnp.array_split(keys, jax.process_count())[jax.process_index()]
+    keys_dropout = jnp.array_split(keys, jax.local_device_count())[jax.process_index()]
     losses = []
-    for tokens in dataset:
-        tokens = tokens._numpy().reshape(-1, config.batch_size, block_size)
+
+    n = jax.local_device_count() * config.batch_size * (block_size + 1)
+    data = data[:(len(data) // n) * n].reshape(-1, jax.local_device_count(), batch_size, block_size + 1)
+
+    for _, tokens in zip(range(max_steps), data):
         loss = eval_step(state, tokens, {'dropout': keys_dropout})
         losses.append(loss)
     return jnp.mean(jnp.stack(losses))
@@ -111,15 +116,10 @@ def param_decay_mask(params: FrozenDict) -> FrozenDict:
     return frozen_dict.freeze(param_mask)
 
 
-def get_dataset(path, batch_size, block_size, shuffle_buffer_size=0, repeat=1, seed=None):
-    data = np.memmap(path, dtype=np.uint16, mode='r')
-    ds = tf.data.Dataset.from_tensor_slices(data)
-    ds = ds.repeat(repeat)
-    ds = ds.batch(block_size, drop_remainder=True)
-    if shuffle_buffer_size > 0:
-        ds = ds.shuffle(shuffle_buffer_size, seed=seed, reshuffle_each_iteration=True)
-    ds = ds.batch(batch_size, drop_remainder=True)
-    return ds.prefetch(2)
+def get_train_batch(data, batch_size, block_size, key):
+    ix = jax.random.randint(key, [jax.local_device_count() * batch_size], 0, len(data) - block_size)
+    tokens = jnp.stack([data[i:i+block_size+1] for i in ix])
+    return tokens.reshape(-1, batch_size, block_size+1)
 
 
 if __name__ == "__main__":
@@ -130,6 +130,10 @@ if __name__ == "__main__":
         wandb.config = asdict(config)
 
     block_size = config.model.block_size
+
+    # ===== datasets =====
+    train_data = np.memmap(config.train_path, dtype=np.uint16, mode='r')
+    val_data = np.memmap(config.train_path, dtype=np.uint16, mode='r')
 
     # ===== learning rate schedule =====
     if isinstance(config.learning_rate, CosineDecayScheduleConfig):
@@ -154,24 +158,12 @@ if __name__ == "__main__":
         optax.add_decayed_weights(config.weight_decay, mask=param_decay_mask(params)),
         optax.adamw(learning_rate, *config.betas, weight_decay=0.0),
     )
+
     train_state = TrainState.create(
         apply_fn=model.apply,
         params=params,
         tx=optimizer)
     del params
-
-    val_ds = get_dataset('/home/penn/drive2/val.bin', config.batch_size, block_size)
-    train_ds = get_dataset(
-        '/home/penn/drive2/train.bin',
-        config.batch_size, block_size,
-        config.shuffle_buffer_size, repeat=None, seed=config.seed) 
-    train_iter = iter(train_ds)
-
-    # manage dataset state (each process saves it's own state)
-    dataset_manager = tf.train.CheckpointManager(
-        tf.train.Checkpoint(iterator=train_iter),
-        f'{config.out_dir}/checkpoints/dataset_{jax.process_index()}',
-        max_to_keep=3)
 
     step = 0
     best_val_loss = float('inf')
@@ -179,33 +171,35 @@ if __name__ == "__main__":
     # ==== restore dataset and train state ==== #
     # restore unreplicated optimizer + model state from last checkpoint.
     # this is a no-op if no checkpoints exist
-    train_state = checkpoints.restore_checkpoint(
-        f'{config.out_dir}/checkpoints/train_state', train_state)
+    train_state, key = checkpoints.restore_checkpoint(
+        f'{config.out_dir}/checkpoints/train_state', (train_state, key))
 
     # grab step from last checkpoint
     step = int(train_state.step)
-    dataset_manager.restore_or_initialize()
 
     # replicate parameters to each device
     train_state = replicate(train_state)
 
-    for step, tokens in enumerate(train_iter, start=step):
-        tokens = tokens._numpy().reshape(-1, config.batch_size, block_size)
+    for step in range(step, config.max_steps):
 
         if step % config.eval_interval == 0:
             key, key_eval = jax.random.split(key)
-            val_loss = evaluate(train_state, val_ds, key_eval)
+            val_loss = evaluate(train_state, val_data, config.batch_size,
+                                block_size, config.eval_iters, key_eval)
             
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
-                dataset_manager.save(step)  # save dataset state in each process
                 # save train state in process 0
                 checkpoints.save_checkpoint_multiprocess(
                     f'{config.out_dir}/checkpoints/train_state',
-                    unreplicate(train_state), step, keep=3)
+                    (unreplicate(train_state), key), step, keep=3)
                 
                 if (config.wandb is not None) and (jax.process_index() == 0):
                     wandb.log({"val/loss": val_loss}, step=step)
+                print('done eval')
+
+        key, key_batch = jax.random.split(key)
+        tokens = get_train_batch(train_data, config.batch_size, block_size, key_batch)
 
         keys = jax.random.split(key, jax.device_count()+1)
         key = keys[0]   # new key state
