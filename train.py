@@ -133,7 +133,7 @@ if __name__ == "__main__":
 
     # ===== datasets =====
     train_data = np.memmap(config.train_path, dtype=np.uint16, mode='r')
-    val_data = np.memmap(config.train_path, dtype=np.uint16, mode='r')
+    val_data = np.memmap(config.val_path, dtype=np.uint16, mode='r')
 
     # ===== learning rate schedule =====
     if isinstance(config.learning_rate, CosineDecayScheduleConfig):
