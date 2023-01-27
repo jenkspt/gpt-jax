@@ -6,11 +6,12 @@ from multiprocessing import cpu_count
 from tqdm import tqdm
 import numpy as np
 import tiktoken
-from datasets import load_dataset # huggingface datasets
+from datasets import load_dataset, DatasetDict
 
 # number of workers in .map() call
 # good number to use is ~order number of cpu cores // 2
 num_proc = cpu_count() // 2
+num_shards = 4
 
 # takes 54GB in huggingface .cache dir, about 8M documents (8,013,769)
 dataset = load_dataset("openwebtext")
@@ -19,17 +20,28 @@ dataset = load_dataset("openwebtext")
 split_dataset = dataset["train"].train_test_split(test_size=0.0005, seed=2357, shuffle=True)
 split_dataset['val'] = split_dataset.pop('test') # rename the test split to val
 
+shard_dataset = DatasetDict()
+for split, dset in split_dataset.items():
+    for i in range(num_shards):
+        shard_dataset[f"{split}_{i}"] = dset.shard(num_shards, i)
+
 # this results in:
-# >>> split_dataset
+# >>> shard_dataset
 # DatasetDict({
-#     train: Dataset({
+#     train_0: Dataset({
 #         features: ['text'],
-#         num_rows: 8009762
+#         num_rows: 8009762 / num_shards
 #     })
-#     val: Dataset({
+#     train_1: Dataset({
 #         features: ['text'],
-#         num_rows: 4007
+#         num_rows: 8009762 / num_shards
 #     })
+#     ...
+#     val_0: Dataset({
+#         features: ['text'],
+#         num_rows: 4007 / num_shards
+#     })
+#     ...
 # })
 
 # we now want to tokenize the dataset. first define the encoding function (gpt2 bpe)
@@ -42,7 +54,7 @@ def process(example):
     return out
 
 # tokenize the dataset
-tokenized = split_dataset.map(
+tokenized = shard_dataset.map(
     process,
     remove_columns=['text'],
     desc="tokenizing the splits",
