@@ -116,9 +116,31 @@ def param_decay_mask(params: FrozenDict) -> FrozenDict:
     return frozen_dict.freeze(param_mask)
 
 
+def init_train_state(config: TrainConfig, optimizer, key) -> TrainState:
+
+    model = GPT(config.model)
+
+    params = model.init(key)
+
+    optimizer = optax.chain(
+        # Apply weight decay only to non-bias parameters
+        optax.add_decayed_weights(config.weight_decay, mask=param_decay_mask(params)),
+        optimizer,
+    )
+
+    train_state = TrainState.create(
+        apply_fn=model.apply,
+        params=params,
+        tx=optimizer)
+
+    return train_state
+
+
 def get_train_batch(data, batch_size, block_size, key):
-    ix = jax.random.randint(key, [jax.local_device_count() * batch_size], 0, len(data) - block_size)
-    tokens = jnp.stack([data[i:i+block_size+1] for i in ix])
+    with jax.experimental.enable_x64():
+        ix = jax.random.randint(key, [jax.local_device_count() * batch_size], 0, len(data) - block_size)
+        ix = np.asarray(ix)
+        tokens = jnp.stack([data[i:i+block_size+1] for i in ix])
     return tokens.reshape(-1, batch_size, block_size+1)
 
 
