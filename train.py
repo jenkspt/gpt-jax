@@ -1,7 +1,6 @@
 from typing import Tuple, Optional, Union
 from dataclasses import dataclass, field, asdict
 from functools import partial
-from pathlib import Path
 import wandb
 import numpy as np
 import tyro
@@ -14,6 +13,7 @@ from flax.training import checkpoints
 from flax.training.train_state import TrainState
 from flax.jax_utils import replicate, unreplicate
 import optax
+from tensorflow.io import gfile
 
 from model import GPT, GPTConfig
 
@@ -38,18 +38,16 @@ class CosineDecayScheduleConfig:
 class TrainConfig:
     seed: int = 555
     out_dir: str = 'out'
-    train_path: Path = Path('train.bin')
-    val_path: Path = Path('val.bin')
+    data_dir: str = '.'
     eval_interval: int = 500
     #log_interval: int = 1
-    eval_iters: int = 50
-    #eval_only: bool = False # if True, script exits right after the first eval
+    eval_steps: int = 50
+    eval_only: bool = False # if True, script exits right after the first eval
     # data
-    #dataset: str = 'openwebtext'
     batch_size: int = 2
+    use_pjit: bool = False
     # adamw optimizer
-    max_steps: int = 500000 # total number of training iterations
-    shuffle_buffer_size: int = 64
+    train_steps: int = 500000 # total number of training iterations
     weight_decay: float = 1e-2
     betas: Tuple[float, float] = (0.9, 0.95)
     learning_rate: Union[float, CosineDecayScheduleConfig] = field(default_factory=CosineDecayScheduleConfig)
@@ -60,11 +58,13 @@ class TrainConfig:
 
 
 @partial(jax.pmap, axis_name='batch')
-def train_step(state: TrainState, tokens: jnp.ndarray, rngs: dict) -> Tuple[jnp.ndarray, TrainState]:
+def train_step(state: TrainState, tokens: jnp.ndarray, dropout_key) -> Tuple[jnp.ndarray, TrainState]:
+
+    dropout_key = jax.random.fold_in(dropout_key, state.step)
 
     def loss_fn(params: FrozenDict) -> jnp.ndarray:
         X, Y = tokens[:, :-1], tokens[:, 1:]
-        logits = state.apply_fn(params, X, False, rngs=rngs)
+        logits = state.apply_fn(params, X, False, rngs={'dropout': dropout_key})
         loss = optax.softmax_cross_entropy_with_integer_labels(logits, Y).mean()
         return loss
     
@@ -79,28 +79,19 @@ def train_step(state: TrainState, tokens: jnp.ndarray, rngs: dict) -> Tuple[jnp.
 
 
 @partial(jax.pmap, axis_name='batch')
-def eval_step(state: TrainState, tokens: jnp.ndarray, rngs: dict) -> jnp.ndarray:
+def eval_step(state: TrainState, tokens: jnp.ndarray) -> jnp.ndarray:
     X, Y = tokens[:, :-1], tokens[:, 1:]
-    logits = state.apply_fn(state.params, X, True, rngs=rngs)
+    logits = state.apply_fn(state.params, X, True)
     loss = optax.softmax_cross_entropy_with_integer_labels(logits, Y)
     loss = jax.lax.pmean(loss, axis_name="batch")
     return loss
 
 
-def evaluate(state: TrainState, data: np.memmap, batch_size: int, block_size: int, max_steps: int, key) -> jnp.ndarray:
-
-    # we want a different dropout rng key for each device
-    keys = jax.random.split(key, jax.device_count())
-    keys_dropout = jnp.array_split(keys, jax.local_device_count())[jax.process_index()]
-    losses = []
-
+def evaluate(state: TrainState, data: np.memmap, batch_size: int, block_size: int, steps: int) -> jnp.ndarray:
     n = jax.local_device_count() * config.batch_size * (block_size + 1)
     data = data[:(len(data) // n) * n].reshape(-1, jax.local_device_count(), batch_size, block_size + 1)
-
-    for _, tokens in zip(range(max_steps), data):
-        loss = eval_step(state, tokens, {'dropout': keys_dropout})
-        losses.append(loss)
-    return jnp.mean(jnp.stack(losses))
+    losses = jax.lax.map(lambda x: eval_step(state, x), data[:steps])
+    return jnp.mean(losses)
 
 
 def count_params(params: FrozenDict) -> int:
@@ -116,15 +107,15 @@ def param_decay_mask(params: FrozenDict) -> FrozenDict:
     return frozen_dict.freeze(param_mask)
 
 
-def init_train_state(config: TrainConfig, optimizer, key) -> TrainState:
+def init_train_state(key, config: GPTConfig, optimizer, weight_decay=1e-2) -> TrainState:
 
-    model = GPT(config.model)
+    model = GPT(config)
 
     params = model.init(key)
 
     optimizer = optax.chain(
         # Apply weight decay only to non-bias parameters
-        optax.add_decayed_weights(config.weight_decay, mask=param_decay_mask(params)),
+        optax.add_decayed_weights(weight_decay, mask=param_decay_mask(params)),
         optimizer,
     )
 
@@ -136,11 +127,11 @@ def init_train_state(config: TrainConfig, optimizer, key) -> TrainState:
     return train_state
 
 
-def get_train_batch(data, batch_size, block_size, key):
+def get_train_batch(data: np.memmap, batch_size: int, block_size: int, key):
     with jax.experimental.enable_x64():
         ix = jax.random.randint(key, [jax.local_device_count() * batch_size], 0, len(data) - block_size)
         ix = np.asarray(ix)
-        tokens = jnp.stack([data[i:i+block_size+1] for i in ix])
+        tokens = np.stack([data[i:i+block_size+1] for i in ix])
     return tokens.reshape(-1, batch_size, block_size+1)
 
 
@@ -154,8 +145,18 @@ if __name__ == "__main__":
     block_size = config.model.block_size
 
     # ===== datasets =====
-    train_data = np.memmap(config.train_path, dtype=np.uint16, mode='r')
-    val_data = np.memmap(config.val_path, dtype=np.uint16, mode='r')
+    train_path = gfile.join(config.data_dir, f'train_{jax.process_index()}.bin')
+    val_path = gfile.join(config.data_dir, f'val_{jax.process_index()}.bin')
+
+    # maybe download shard
+    if config.data_dir.startswith('gs://'):
+        gfile.copy(train_path, train_path.split('/')[-1])
+        gfile.copy(val_path, val_path.split('/')[-1])
+        train_path = train_path.split('/')[-1]
+        val_path = val_path.split('/')[-1]
+
+    train_data = np.memmap(train_path, dtype=np.uint16, mode='r')
+    val_data = np.memmap(val_path, dtype=np.uint16, mode='r')
 
     # ===== learning rate schedule =====
     if isinstance(config.learning_rate, CosineDecayScheduleConfig):
@@ -165,29 +166,20 @@ if __name__ == "__main__":
 
     # =====  init parameters ============
     key = jax.random.PRNGKey(config.seed)
-    key, key_params = jax.random.split(key, 2)
+    key, key_params, key_dropout = jax.random.split(key, 3)
+    keys_dropout = jax.random.split(key_dropout, jax.device_count())
+    # make sure dropout keys are different for each device (local and global)
+    keys_dropout = jnp.array_split(keys_dropout, jax.local_device_count())[jax.process_index()]
 
-    model = GPT(config.model)
-    params = model.init(key_params)
+    optimizer = optax.adam(learning_rate, *config.betas)
 
-    num_params = count_params(params)
+    train_state = init_train_state(key_params, config.model, optimizer, config.weight_decay)
+
+    num_params = count_params(train_state.params)
     if jax.process_index() == 0:
         #logging.info(f'PARAMETER COUNT: {num_params:,}')
         print(f'PARAMETER COUNT: {num_params:,}')
 
-    optimizer = optax.chain(
-        # Apply weight decay only to non-bias parameters
-        optax.add_decayed_weights(config.weight_decay, mask=param_decay_mask(params)),
-        optax.adamw(learning_rate, *config.betas, weight_decay=0.0),
-    )
-
-    train_state = TrainState.create(
-        apply_fn=model.apply,
-        params=params,
-        tx=optimizer)
-    del params
-
-    step = 0
     best_val_loss = float('inf')
 
     # ==== restore dataset and train state ==== #
@@ -202,32 +194,28 @@ if __name__ == "__main__":
     # replicate parameters to each device
     train_state = replicate(train_state)
 
-    for step in range(step, config.max_steps):
+    for step in range(step, config.train_steps):
 
         if step % config.eval_interval == 0:
-            key, key_eval = jax.random.split(key)
             val_loss = evaluate(train_state, val_data, config.batch_size,
-                                block_size, config.eval_iters, key_eval)
+                                block_size, config.eval_steps)
             
-            if val_loss < best_val_loss:
+            if (val_loss < best_val_loss) and not config.eval_only:
                 best_val_loss = val_loss
                 # save train state in process 0
                 checkpoints.save_checkpoint_multiprocess(
                     f'{config.out_dir}/checkpoints/train_state',
                     (unreplicate(train_state), key), step, keep=3)
                 
-                if (config.wandb is not None) and (jax.process_index() == 0):
-                    wandb.log({"val/loss": val_loss}, step=step)
-                print('done eval')
+            if (config.wandb is not None) and (jax.process_index() == 0):
+                wandb.log({"val/loss": val_loss}, step=step)
+
+        if config.eval_only:
+            break
 
         key, key_batch = jax.random.split(key)
         tokens = get_train_batch(train_data, config.batch_size, block_size, key_batch)
-
-        keys = jax.random.split(key, jax.device_count()+1)
-        key = keys[0]   # new key state
-        # keys for train step
-        keys_dropout = jnp.array_split(keys[1:], jax.process_count())[jax.process_index()]
-        loss, train_state = train_step(train_state, tokens, {'dropout': keys_dropout})
+        loss, train_state = train_step(train_state, tokens, keys_dropout)
 
         if (config.wandb is not None) and (jax.process_index() == 0):
             wandb.log({

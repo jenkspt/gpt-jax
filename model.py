@@ -16,7 +16,6 @@ class GPTConfig:
     num_heads: int = 12
     num_embeds: int = 768
     dropout_rate: float = 0.1
-    deterministic: Optional[bool] = None
     dtype: Optional[str] = None
 
 
@@ -33,6 +32,7 @@ class SelfAttention(nn.Module):
         B, T, C = x.shape
         assert C % self.num_heads == 0
         head_dim = C // self.num_heads
+        deterministic = nn.merge_param('deterministic', self.deterministic, deterministic)
 
         qkv = nn.Dense(3 * C, dtype=self.dtype, name='c_attn')(x)
         qkv = qkv.reshape(B, T, 3 * self.num_heads, head_dim)
@@ -74,8 +74,7 @@ class Block(nn.Module):
         self.ln_1 = nn.LayerNorm(dtype=self.config.dtype)
         self.attn = SelfAttention(self.config.num_heads,
                                   self.config.dtype,
-                                  dropout_rate=self.config.dropout_rate,
-                                  deterministic=self.config.deterministic)
+                                  dropout_rate=self.config.dropout_rate)
         self.ln_2 = nn.LayerNorm(dtype=self.config.dtype)
         self.mlp = MLP(self.config)
 
@@ -92,7 +91,6 @@ class GPT(nn.Module):
     def __call__(self, idx, deterministic=None):
         B, T = idx.shape
         assert T <= self.config.block_size, f"Cannot forward sequence of length {T}, block size is only {self.block_size}"
-        #deterministic = nn.merge_param('deterministic', self.config.deterministic, deterministic)
 
         pos = jnp.arange(0, T)[None]
         attn_mask = nn.make_causal_mask(idx, dtype=bool)
