@@ -169,7 +169,7 @@ if __name__ == "__main__":
     key, key_params, key_dropout = jax.random.split(key, 3)
     keys_dropout = jax.random.split(key_dropout, jax.device_count())
     # make sure dropout keys are different for each device (local and global)
-    keys_dropout = jnp.array_split(keys_dropout, jax.local_device_count())[jax.process_index()]
+    keys_dropout = jnp.array_split(keys_dropout, jax.process_count())[jax.process_index()]
 
     optimizer = optax.adam(learning_rate, *config.betas)
 
