@@ -90,8 +90,12 @@ def eval_step(state: TrainState, tokens: jnp.ndarray) -> jnp.ndarray:
 def evaluate(state: TrainState, data: np.memmap, batch_size: int, block_size: int, steps: int) -> jnp.ndarray:
     n = jax.local_device_count() * config.batch_size * (block_size + 1)
     data = data[:(len(data) // n) * n].reshape(-1, jax.local_device_count(), batch_size, block_size + 1)
-    losses = jax.lax.map(lambda x: eval_step(state, x), data[:steps])
-    return jnp.mean(losses)
+    losses = []
+
+    for tokens in data[:steps]:
+        loss = eval_step(state, tokens)
+        losses.append(loss)
+    return jnp.mean(jnp.stack(losses))
 
 
 def count_params(params: FrozenDict) -> int:
