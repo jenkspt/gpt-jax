@@ -142,7 +142,7 @@ def get_train_batch(data: np.memmap, batch_size: int, block_size: int, key):
 if __name__ == "__main__":
     config = tyro.cli(TrainConfig)
 
-    if config.wandb is not None:
+    if config.wandb is not None and jax.process_index() == 0:
         wandb.init(**asdict(config.wandb))
         wandb.config = asdict(config)
 
