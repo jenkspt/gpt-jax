@@ -13,14 +13,14 @@ from model import GPT, GPTConfig
 from train import (
     train_step,
     init_train_state,
-    get_train_batch,
     count_params,
-    param_decay_mask,
 )
+from dataset import get_dataset
 
 # -----------------------------------------------------------------------------
 
 def benchmark(
+    pattern: str = "train_??.tfrecord",
     batch_size: int = 8,
     seed: int = 1337,
     model: GPTConfig = GPTConfig()):
@@ -29,9 +29,9 @@ def benchmark(
 
     key = jax.random.PRNGKey(seed)
     key, key_params, key_dropout = jax.random.split(key, 3)
-    keys_dropout = jax.random.split(key_dropout, jax.device_count())
     # make sure dropout keys are different for each device (local and global)
-    keys_dropout = jnp.array_split(keys_dropout, jax.process_count())[jax.process_index()]
+    key_dropout = jax.random.fold_in(key_dropout, jax.process_index())
+    keys_dropout = jax.random.split(key_dropout, jax.local_device_count())
 
     optimizer = optax.adam(3e-4, 0.9, 0.95)
 
@@ -44,15 +44,18 @@ def benchmark(
 
     train_state = replicate(train_state)
 
-    data = np.memmap(f'train_{jax.process_index()}.bin', dtype=np.uint16, mode='r')
-    tokens = get_train_batch(data, batch_size, block_size, key)
+    train_ds = get_dataset(
+        pattern, batch_size,
+        block_size, 64,
+        seed = seed)
+    train_iter = iter(train_ds)
+
     # simple benchmarking
     for stage, num_steps in enumerate([10, 20]): # burnin, then benchmark
         jax.tree_util.tree_map(lambda a: a.block_until_ready(), train_state.params)
         t0 = time.time()
         for k in range(num_steps):
-            key, key_batch = jax.random.split(key)
-            #tokens = get_train_batch(data, batch_size, block_size, key_batch)
+            tokens = next(train_iter)._numpy()
             loss, train_state = train_step(train_state, tokens, keys_dropout)
 
             #print(f"{k}/{num_steps} loss: {loss:.4f}")

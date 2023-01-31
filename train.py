@@ -1,7 +1,6 @@
 from typing import Tuple, Optional, Union
 from dataclasses import dataclass, field, asdict
 from functools import partial
-from pathlib import Path
 import wandb
 import numpy as np
 import tyro
@@ -14,9 +13,11 @@ from flax.training import checkpoints
 from flax.training.train_state import TrainState
 from flax.jax_utils import replicate, unreplicate
 import optax
-from tensorflow.io import gfile
 
 from model import GPT, GPTConfig
+from dataset import get_dataset
+
+import tensorflow as tf
 
 
 @dataclass(frozen=True)
@@ -31,7 +32,7 @@ class CosineDecayScheduleConfig:
     init_value: float = 0.0
     peak_value: float = 2.5e-4
     warmup_steps: int = 2000
-    decay_steps: int = 320000
+    decay_steps: int = 150000
     end_value: float = 1e-5
 
 
@@ -39,14 +40,16 @@ class CosineDecayScheduleConfig:
 class TrainConfig:
     seed: int = 555
     out_dir: str = 'out'
-    train_pattern: str = 'train'
+    train_pattern: str = 'train_??.tfrecord'
+    val_pattern: str = 'val_??.tfrecord'
+    shuffle_buffer_size: int = 128
     eval_interval: int = 500
-    eval_steps: int = 50
+    eval_steps: int = 16
     eval_only: bool = False # if True, script exits right after the first eval
     # data
-    batch_size: int = 8
+    batch_size: int = 16
     # adamw optimizer
-    train_steps: int = 500000 # total number of training iterations
+    train_steps: int = 150000 # total number of training iterations
     weight_decay: float = 1e-2
     betas: Tuple[float, float] = (0.9, 0.95)
     learning_rate: Union[float, CosineDecayScheduleConfig] = field(default_factory=CosineDecayScheduleConfig)
@@ -86,12 +89,10 @@ def eval_step(state: TrainState, tokens: jnp.ndarray) -> jnp.ndarray:
     return loss
 
 
-def evaluate(state: TrainState, data: np.memmap, batch_size: int, block_size: int, steps: int) -> jnp.ndarray:
-    n = jax.local_device_count() * config.batch_size * (block_size + 1)
-    data = data[:(len(data) // n) * n].reshape(-1, jax.local_device_count(), batch_size, block_size + 1)
+def evaluate(state: TrainState, ds: tf.data.Dataset, batch_size: int, block_size: int, steps: int) -> jnp.ndarray:
     losses = []
-
-    for tokens in data[:steps]:
+    for _, tokens in zip(range(steps), ds):
+        tokens = tokens._numpy()
         loss = eval_step(state, tokens)
         losses.append(loss)
     return jnp.mean(jnp.stack(losses))
@@ -130,24 +131,6 @@ def init_train_state(key, config: GPTConfig, optimizer, weight_decay=1e-2) -> Tr
     return train_state
 
 
-def get_train_batch(data: np.memmap, batch_size: int, block_size: int, key):
-    with jax.experimental.enable_x64():
-        ix = jax.random.randint(key, [jax.local_device_count() * batch_size], 0, len(data) - block_size)
-        ix = np.asarray(ix)
-        tokens = np.stack([data[i:i+block_size+1] for i in ix])
-    return tokens.reshape(-1, batch_size, block_size+1)
-
-
-def maybe_download(path: str) -> str:
-    assert gfile.exists(path), f'file {path} does not exist'
-    if path.startswith('gs://'):
-        local_path = Path(path.split('/')[3:])
-        local_path.parent.mkdir(parents=True, exist_ok=True)
-        gfile.copy(path, str(local_path))
-        return local_path
-    return path
-
-
 if __name__ == "__main__":
     config = tyro.cli(TrainConfig)
 
@@ -158,14 +141,15 @@ if __name__ == "__main__":
     block_size = config.model.block_size
 
     # ===== datasets =====
-    # each process downloads it's own shard
-    train_path = gfile.join(config.data_dir, f'train_{jax.process_index()}.bin')
-    val_path = gfile.join(config.data_dir, f'val_{jax.process_index()}.bin')
-    train_path = maybe_download(train_path)
-    val_path = maybe_download(val_path)
+    train_ds = get_dataset(
+        config.train_pattern, config.batch_size,
+        block_size, config.shuffle_buffer_size,
+        seed = config.seed)
 
-    train_data = np.memmap(train_path, dtype=np.uint16, mode='r')
-    val_data = np.memmap(val_path, dtype=np.uint16, mode='r')
+    val_ds = get_dataset(
+        config.val_pattern, config.batch_size,
+        block_size, config.shuffle_buffer_size,
+        repeat=1)
 
     # ===== learning rate schedule =====
     if isinstance(config.learning_rate, CosineDecayScheduleConfig):
@@ -176,9 +160,9 @@ if __name__ == "__main__":
     # =====  init parameters ============
     key = jax.random.PRNGKey(config.seed)
     key, key_params, key_dropout = jax.random.split(key, 3)
-    keys_dropout = jax.random.split(key_dropout, jax.device_count())
     # make sure dropout keys are different for each device (local and global)
-    keys_dropout = jnp.array_split(keys_dropout, jax.process_count())[jax.process_index()]
+    key_dropout = jax.random.fold_in(key_dropout, jax.process_index())
+    keys_dropout = jax.random.split(key_dropout, jax.local_device_count())
 
     optimizer = optax.adam(learning_rate, *config.betas)
 
@@ -200,13 +184,23 @@ if __name__ == "__main__":
     # grab step from last checkpoint
     step = int(train_state.step)
 
+
+    train_iter = iter(train_ds)
+    # We need to be able to save the dataset state for stopping and resuming training
+    # we'll save a dataset checkpoint for each shard
+    dataset_manager = tf.train.CheckpointManager(
+        tf.train.Checkpoint(iterator=train_iter),
+        f"{config.out_dir}/checkpoints/dataset_{jax.process_index()}",
+        max_to_keep=3)
+    dataset_manager.restore_or_initialize()
+
     # replicate parameters to each device
     train_state = replicate(train_state)
 
     for step in range(step, config.train_steps):
 
         if step % config.eval_interval == 0:
-            val_loss = evaluate(train_state, val_data, config.batch_size,
+            val_loss = evaluate(train_state, val_ds, config.batch_size,
                                 block_size, config.eval_steps)
             
             if (val_loss < best_val_loss) and not config.eval_only:
@@ -215,6 +209,7 @@ if __name__ == "__main__":
                 checkpoints.save_checkpoint_multiprocess(
                     f'{config.out_dir}/checkpoints/train_state',
                     (unreplicate(train_state), key), step, keep=3)
+                dataset_manager.save(step)
                 
             if (config.wandb is not None) and (jax.process_index() == 0):
                 wandb.log({"val/loss": val_loss}, step=step)
@@ -222,8 +217,7 @@ if __name__ == "__main__":
         if config.eval_only:
             break
 
-        key, key_batch = jax.random.split(key)
-        tokens = get_train_batch(train_data, config.batch_size, block_size, key_batch)
+        tokens = next(train_iter)._numpy()
         loss, train_state = train_step(train_state, tokens, keys_dropout)
 
         if (config.wandb is not None) and (jax.process_index() == 0):

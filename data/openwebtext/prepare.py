@@ -7,11 +7,12 @@ from tqdm import tqdm
 import numpy as np
 import tiktoken
 from datasets import load_dataset, DatasetDict
+import tensorflow as tf
 
 # number of workers in .map() call
 # good number to use is ~order number of cpu cores // 2
 num_proc = cpu_count() // 2
-num_shards = 4
+num_shards = {'train': 32, 'val': 8}
 
 # takes 54GB in huggingface .cache dir, about 8M documents (8,013,769)
 dataset = load_dataset("openwebtext")
@@ -22,8 +23,8 @@ split_dataset['val'] = split_dataset.pop('test') # rename the test split to val
 
 shard_dataset = DatasetDict()
 for split, dset in split_dataset.items():
-    for i in range(num_shards):
-        shard_dataset[f"{split}_{i}"] = dset.shard(num_shards, i)
+    for i in range(num_shards[split]):
+        shard_dataset[f"{split}_{i:02}"] = dset.shard(num_shards[split], i)
 
 # this results in:
 # >>> shard_dataset
@@ -50,7 +51,7 @@ def process(example):
     ids = enc.encode_ordinary(example['text']) # encode_ordinary ignores any special tokens
     ids.append(enc.eot_token) # add the end of text token, e.g. 50256 for gpt2 bpe
     # note: I think eot should be prepended not appended... hmm. it's called "eot" though...
-    out = {'ids': ids, 'len': len(ids)}
+    out = {'ids': ids}
     return out
 
 # tokenize the dataset
@@ -61,19 +62,26 @@ tokenized = shard_dataset.map(
     num_proc=num_proc,
 )
 
+def _bytes_feature(value):
+  """Returns a bytes_list from a string / byte."""
+  if isinstance(value, type(tf.constant(0))):
+    value = value.numpy() # BytesList won't unpack a string from an EagerTensor.
+  return tf.train.Feature(bytes_list=tf.train.BytesList(value=[value]))
+
 # concatenate all the ids in each dataset into one large file we can use for training
 for split, dset in tokenized.items():
-    arr_len = np.sum(dset['len'])
-    filename = f'{split}.bin'
-    dtype = np.uint16 # (can do since enc.max_token_value == 50256 is < 2**16)
-    arr = np.memmap(filename, dtype=dtype, mode='w+', shape=(arr_len,))
+    filename = f'{split}.tfrecord'
 
     print(f"writing {filename}...")
-    idx = 0
-    for example in tqdm(dset):
-        arr[idx : idx + example['len']] = example['ids']
-        idx += example['len']
-    arr.flush()
+    with tf.io.TFRecordWriter(filename) as writer:
+        for example in tqdm(dset):
+            feature = np.asarray(example['ids'], dtype=np.uint16).tobytes()
+            example_proto = tf.train.Example(
+                features=tf.train.Features(feature={
+                    'ids': _bytes_feature(feature)
+                    }))
+            writer.write(example_proto.SerializeToString())
+
 
 # train.bin is ~17GB, val.bin ~8.5MB
 # train has ~9B tokens (9,035,582,198)
