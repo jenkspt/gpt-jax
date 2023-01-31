@@ -1,6 +1,7 @@
 from typing import Tuple, Optional, Union
 from dataclasses import dataclass, field, asdict
 from functools import partial
+from pathlib import Path
 import wandb
 import numpy as np
 import tyro
@@ -38,14 +39,12 @@ class CosineDecayScheduleConfig:
 class TrainConfig:
     seed: int = 555
     out_dir: str = 'out'
-    data_dir: str = '.'
+    train_pattern: str = 'train'
     eval_interval: int = 500
-    #log_interval: int = 1
     eval_steps: int = 50
     eval_only: bool = False # if True, script exits right after the first eval
     # data
-    batch_size: int = 2
-    use_pjit: bool = False
+    batch_size: int = 8
     # adamw optimizer
     train_steps: int = 500000 # total number of training iterations
     weight_decay: float = 1e-2
@@ -139,6 +138,16 @@ def get_train_batch(data: np.memmap, batch_size: int, block_size: int, key):
     return tokens.reshape(-1, batch_size, block_size+1)
 
 
+def maybe_download(path: str) -> str:
+    assert gfile.exists(path), f'file {path} does not exist'
+    if path.startswith('gs://'):
+        local_path = Path(path.split('/')[3:])
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        gfile.copy(path, str(local_path))
+        return local_path
+    return path
+
+
 if __name__ == "__main__":
     config = tyro.cli(TrainConfig)
 
@@ -149,15 +158,11 @@ if __name__ == "__main__":
     block_size = config.model.block_size
 
     # ===== datasets =====
+    # each process downloads it's own shard
     train_path = gfile.join(config.data_dir, f'train_{jax.process_index()}.bin')
     val_path = gfile.join(config.data_dir, f'val_{jax.process_index()}.bin')
-
-    # maybe download shard
-    if config.data_dir.startswith('gs://'):
-        gfile.copy(train_path, train_path.split('/')[-1])
-        gfile.copy(val_path, val_path.split('/')[-1])
-        train_path = train_path.split('/')[-1]
-        val_path = val_path.split('/')[-1]
+    train_path = maybe_download(train_path)
+    val_path = maybe_download(val_path)
 
     train_data = np.memmap(train_path, dtype=np.uint16, mode='r')
     val_data = np.memmap(val_path, dtype=np.uint16, mode='r')
