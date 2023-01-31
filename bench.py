@@ -59,6 +59,7 @@ def benchmark(
         t1 = time.time()
         if stage == 1:
             print(f"time per iteration: {(t1-t0)/num_steps*1000:.4f}ms")
+            print(f"time per block: {(t1-t0)/num_steps*1000/batch_size/jax.local_device_count():.4f}ms")
 
 if __name__ == "__main__":
     tyro.cli(benchmark)
