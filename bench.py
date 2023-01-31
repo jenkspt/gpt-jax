@@ -45,13 +45,14 @@ def benchmark(
     train_state = replicate(train_state)
 
     data = np.memmap(f'train_{jax.process_index()}.bin', dtype=np.uint16, mode='r')
+    tokens = get_train_batch(data, batch_size, block_size, key)
     # simple benchmarking
     for stage, num_steps in enumerate([10, 20]): # burnin, then benchmark
         jax.tree_util.tree_map(lambda a: a.block_until_ready(), train_state.params)
         t0 = time.time()
         for k in range(num_steps):
             key, key_batch = jax.random.split(key)
-            tokens = get_train_batch(data, batch_size, block_size, key_batch)
+            #tokens = get_train_batch(data, batch_size, block_size, key_batch)
             loss, train_state = train_step(train_state, tokens, keys_dropout)
 
             #print(f"{k}/{num_steps} loss: {loss:.4f}")
@@ -59,7 +60,7 @@ def benchmark(
         t1 = time.time()
         if stage == 1:
             print(f"time per iteration: {(t1-t0)/num_steps*1000:.4f}ms")
-            print(f"time per block: {(t1-t0)/num_steps*1000/batch_size/jax.local_device_count():.4f}ms")
+            print(f"time per block: {(t1-t0)/num_steps*1000/batch_size/jax.device_count():.4f}ms")
 
 if __name__ == "__main__":
     tyro.cli(benchmark)
