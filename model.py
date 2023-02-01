@@ -3,6 +3,11 @@ from dataclasses import dataclass
 from functools import partial
 import jax
 import jax.numpy as jnp
+import flax
+
+# monkey patch init
+flax.linen.linear.default_kernel_init = flax.linen.initializers.kaiming_uniform()
+
 import flax.linen as nn
 from flax.core import FrozenDict, freeze, unfreeze
 from flax.traverse_util import flatten_dict, unflatten_dict
