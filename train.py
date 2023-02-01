@@ -52,6 +52,7 @@ class TrainConfig:
     # adamw optimizer
     train_steps: int = 150000 # total number of training iterations
     weight_decay: float = 1e-2
+    grad_clip: float = 1.0
     betas: Tuple[float, float] = (0.9, 0.95)
     learning_rate: Union[float, CosineDecayScheduleConfig] = field(default_factory=CosineDecayScheduleConfig)
     # wandb logging
@@ -112,13 +113,14 @@ def param_decay_mask(params: FrozenDict) -> FrozenDict:
     return frozen_dict.freeze(param_mask)
 
 
-def init_train_state(key, config: GPTConfig, optimizer, weight_decay=1e-2) -> TrainState:
+def init_train_state(key, config: GPTConfig, optimizer, weight_decay=1e-2, grad_clip=1.0) -> TrainState:
 
     model = GPT(config)
 
     params = model.init(key)
 
     optimizer = optax.chain(
+        optax.clip_by_global_norm(grad_clip),
         # Apply weight decay only to non-bias parameters
         optax.add_decayed_weights(weight_decay, mask=param_decay_mask(params)),
         optimizer,
@@ -167,7 +169,7 @@ if __name__ == "__main__":
 
     optimizer = optax.adam(learning_rate, *config.betas)
 
-    train_state = init_train_state(key_params, config.model, optimizer, config.weight_decay)
+    train_state = init_train_state(key_params, config.model, optimizer, config.weight_decay, config.grad_clip)
 
     num_params = count_params(train_state.params)
     if jax.process_index() == 0:
