@@ -222,6 +222,6 @@ if __name__ == "__main__":
 
         if (config.wandb is not None) and (jax.process_index() == 0):
             wandb.log({
-                "train/loss": loss,
+                "train/loss": loss[0].item(),
                 "lr": learning_rate(step) if callable(learning_rate) else learning_rate
             }, step=step)
