@@ -46,6 +46,7 @@ class TrainConfig:
     eval_interval: int = 500
     eval_steps: int = 16
     eval_only: bool = False # if True, script exits right after the first eval
+    keep_checkpoints: int = 3
     # data
     batch_size: int = 16
     # adamw optimizer
@@ -191,7 +192,7 @@ if __name__ == "__main__":
     dataset_manager = tf.train.CheckpointManager(
         tf.train.Checkpoint(iterator=train_iter),
         f"{config.out_dir}/checkpoints/dataset_{jax.process_index()}",
-        max_to_keep=3)
+        max_to_keep=config.keep_checkpoints)
     dataset_manager.restore_or_initialize()
 
     # replicate parameters to each device
@@ -208,7 +209,7 @@ if __name__ == "__main__":
                 # save train state in process 0
                 checkpoints.save_checkpoint_multiprocess(
                     f'{config.out_dir}/checkpoints/train_state',
-                    (unreplicate(train_state), key), step, keep=3)
+                    (unreplicate(train_state), key), step, keep=config.keep_checkpoints)
                 dataset_manager.save(step)
                 
             if (config.wandb is not None) and (jax.process_index() == 0):
