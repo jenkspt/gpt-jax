@@ -21,6 +21,7 @@ pip install tqdm
 pip install numpy
 pip install tiktoken
 pip install datasets
+pip install tensorflow
 ```
 
 Prepare data
@@ -29,8 +30,8 @@ python data/openwebtext/prepare.py
 ```
 
 This will generate the following files:  
-`train_0.bin`, `train_1.bin` ... `train_{num_shards}`  
-`val_0.bin`, `val_1.bin` ... `val_{num_shards}`
+`train_0.tfrecord`, `train_1.tfrecord` ... `train_{num_shards}`  
+`val_0.tfrecord`, `val_1.tfrecord` ... `val_{num_shards}`
 
 
 ## Train (TPU single process)
