@@ -43,8 +43,7 @@ class SelfAttention(nn.Module):
         attn = jnp.einsum('...qhd,...khd->...hqk', q, k) * scale
         attn = jnp.where(mask, attn, jnp.finfo(self.dtype).min)
         attn = jax.nn.softmax(attn).astype(self.dtype)
-
-        x = nn.Dropout(self.dropout_rate)(attn, deterministic=deterministic)
+        attn = nn.Dropout(self.dropout_rate)(attn, deterministic=deterministic)
 
         # return weighted sum over values for each query position
         x = jnp.einsum('...hqk,...khd->...qhd', attn, v).reshape(B, T, C)
