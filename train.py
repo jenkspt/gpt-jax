@@ -181,8 +181,8 @@ if __name__ == "__main__":
     # ==== restore dataset and train state ==== #
     # restore unreplicated optimizer + model state from last checkpoint.
     # this is a no-op if no checkpoints exist
-    train_state, key = checkpoints.restore_checkpoint(
-        f'{config.out_dir}/checkpoints/train_state', (train_state, key))
+    train_state = checkpoints.restore_checkpoint(
+        f'{config.out_dir}/checkpoints/train_state', train_state)
 
     # grab step from last checkpoint
     step = int(train_state.step)
@@ -211,7 +211,7 @@ if __name__ == "__main__":
                 # save train state in process 0
                 checkpoints.save_checkpoint_multiprocess(
                     f'{config.out_dir}/checkpoints/train_state',
-                    (unreplicate(train_state), key), step, keep=config.keep_checkpoints)
+                    unreplicate(train_state), step, keep=config.keep_checkpoints)
                 dataset_manager.save(step)
                 
             if (config.wandb is not None) and (jax.process_index() == 0):
