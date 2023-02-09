@@ -11,7 +11,7 @@ from flax.traverse_util import flatten_dict, unflatten_dict
 @dataclass(frozen=True)
 class GPTConfig:
     block_size: int = 1024
-    vocab_size: int = 50257
+    vocab_size: int = 50304
     num_layers: int = 12
     num_heads: int = 12
     num_embeds: int = 768
