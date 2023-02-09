@@ -22,9 +22,17 @@ import tensorflow as tf
 
 @dataclass(frozen=True)
 class WandbConfig:
+    """
+    wandb logging configuration
+    """
     entity: str = 'jenkspt'
+    """username or team name where you're sending runs"""
     project: str = 'owt'
+    """project name"""
     name: str = 'test'
+    """experiment name"""
+    mode: str = 'online'
+    """'offline', 'online', or 'disabled'"""
 
 
 @dataclass(frozen=True)
@@ -39,26 +47,24 @@ class CosineDecayScheduleConfig:
 @dataclass(frozen=True)
 class TrainConfig:
     seed: int = 555
-    out_dir: str = 'out'
-    train_pattern: str = 'train_??.tfrecord'
-    val_pattern: str = 'val_??.tfrecord'
+    out_dir: str = 'out'                        # output directory for checkpoints (can be gcs path)
+    train_pattern: str = 'train_??.tfrecord'    # training files glob pattern (can be gcs path)
+    val_pattern: str = 'val_??.tfrecord'        # validation files glob pattern (can be gcs path)
     shuffle_buffer_size: int = 128
     eval_interval: int = 500
-    eval_steps: int = 16
-    eval_only: bool = False # if True, script exits right after the first eval
-    keep_checkpoints: int = 3
-    # data
-    batch_size: int = 16
-    # adamw optimizer
-    train_steps: int = 150000 # total number of training iterations
-    weight_decay: float = 1e-2
-    grad_clip: float = 1.0
-    betas: Tuple[float, float] = (0.9, 0.95)
+    eval_steps: int = 16        # evaluate for this number of steps (per-device)
+    eval_only: bool = False     # if True, script exits right after the first eval
+    keep_checkpoints: int = 3   # number of historical checkpoints to keep
+    batch_size: int = 16        # per-device batch size
+    train_steps: int = 150000   # total number of training iterations
+    weight_decay: float = 1e-2  # not applied to bias and embedding parameters
+    grad_clip: float = 1.0      # gradient norm clipping magnitude
+    betas: Tuple[float, float] = (0.9, 0.95) # adamw optimizer betas
     learning_rate: Union[float, CosineDecayScheduleConfig] = field(default_factory=CosineDecayScheduleConfig)
+    wandb: WandbConfig = field(default_factory=WandbConfig)
     # wandb logging
-    wandb: Optional[WandbConfig] = field(default_factory=WandbConfig)
-    # model
     model: GPTConfig = field(default_factory=GPTConfig)
+    # gpt model config
 
 
 @partial(jax.pmap, axis_name='batch')
@@ -139,7 +145,7 @@ if __name__ == "__main__":
 
     if config.wandb is not None and jax.process_index() == 0:
         wandb.init(**asdict(config.wandb))
-        wandb.config = asdict(config)
+        wandb.config.update(asdict(config))
 
     block_size = config.model.block_size
 
@@ -226,5 +232,7 @@ if __name__ == "__main__":
         if (config.wandb is not None) and (jax.process_index() == 0):
             wandb.log({
                 "train/loss": loss[0].item(),
-                "lr": learning_rate(step) if callable(learning_rate) else learning_rate
+                "lr": learning_rate(step) if callable(learning_rate) else learning_rate,
+                "step": step,
+                "block": step * config.batch_size * jax.device_count(),
             }, step=step)
