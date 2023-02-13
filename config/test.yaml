@@ -1,0 +1,20 @@
+# tyro YAML.
+!dataclass:TrainConfig
+batch_size: 2
+eval_steps: 10
+keep_checkpoints: 1
+model: !dataclass:GPTConfig
+  block_size: 32
+  dtype: float16
+  num_embeds: 32
+  num_heads: 2
+  num_layers: 1
+  vocab_size: 32
+out_dir: out
+seed: 0
+shuffle_buffer_size: 8
+train_pattern: train_??.tfrecord
+train_steps: 10
+val_pattern: val_??.tfrecord
+wandb: !dataclass:WandbConfig
+  mode: disabled
