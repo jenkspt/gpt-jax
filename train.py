@@ -4,7 +4,7 @@ from functools import partial
 import os
 import wandb
 import tyro
-import yaml
+import logging
 
 import jax
 import jax.numpy as jnp
@@ -145,7 +145,7 @@ def get_default_config() -> TrainConfig:
     path = os.environ.get('GPT_CONFIG', os.path.join('config', 'gpt2.yaml'))
     if not os.path.exists(path):
         return TrainConfig()
-    print(f'using config file at {path}')
+    logging.info(f'using config file at {path}')
     with open(path, 'r') as f:
         return tyro.from_yaml(TrainConfig, f)
 
@@ -180,7 +180,7 @@ if __name__ == "__main__":
     key_dropout = jax.random.fold_in(key_dropout, jax.process_index())
     keys_dropout = jax.random.split(key_dropout, jax.local_device_count())
 
-    optimizer = optax.adam(learning_rate, *config.betas)
+    optimizer = optax.adamw(learning_rate, *config.betas, weight_decay=0.0)
 
     train_state = init_train_state(key_params, config.model, optimizer, config.weight_decay, config.grad_clip)
 
