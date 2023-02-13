@@ -1,9 +1,10 @@
 from typing import Tuple, Optional, Union
 from dataclasses import dataclass, field, asdict
 from functools import partial
+import os
 import wandb
-import numpy as np
 import tyro
+import yaml
 
 import jax
 import jax.numpy as jnp
@@ -60,11 +61,9 @@ class TrainConfig:
     weight_decay: float = 1e-2  # not applied to bias and embedding parameters
     grad_clip: float = 1.0      # gradient norm clipping magnitude
     betas: Tuple[float, float] = (0.9, 0.95) # adamw optimizer betas
-    learning_rate: Union[float, CosineDecayScheduleConfig] = field(default_factory=CosineDecayScheduleConfig)
-    wandb: WandbConfig = field(default_factory=WandbConfig)
-    # wandb logging
-    model: GPTConfig = field(default_factory=GPTConfig)
-    # gpt model config
+    learning_rate: CosineDecayScheduleConfig = field(default_factory=CosineDecayScheduleConfig)
+    wandb: WandbConfig = field(default_factory=WandbConfig) # wandb logging
+    model: GPTConfig = field(default_factory=GPTConfig)     # gpt model config
 
 
 @partial(jax.pmap, axis_name='batch')
@@ -140,8 +139,17 @@ def init_train_state(key, config: GPTConfig, optimizer, weight_decay=1e-2, grad_
     return train_state
 
 
+def get_default_config() -> TrainConfig:
+    # use this file to set default values
+    path = os.environ.get('GPT_CONFIG', os.path.join('config', 'gpt2.yaml'))
+    if not os.path.exists(path):
+        return TrainConfig()
+    with open(path, 'r') as f:
+        return tyro.from_yaml(TrainConfig, f)
+
+
 if __name__ == "__main__":
-    config = tyro.cli(TrainConfig)
+    config = tyro.cli(TrainConfig, default=get_default_config())
 
     if config.wandb is not None and jax.process_index() == 0:
         wandb.init(**asdict(config.wandb))
@@ -161,10 +169,7 @@ if __name__ == "__main__":
         repeat=1)
 
     # ===== learning rate schedule =====
-    if isinstance(config.learning_rate, CosineDecayScheduleConfig):
-        learning_rate = optax.warmup_cosine_decay_schedule(**asdict(config.learning_rate))
-    else:
-        learning_rate = config.learning_rate
+    learning_rate = optax.warmup_cosine_decay_schedule(**asdict(config.learning_rate))
 
     # =====  init parameters ============
     key = jax.random.PRNGKey(config.seed)
