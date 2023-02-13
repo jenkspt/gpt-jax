@@ -34,6 +34,7 @@ class WandbConfig:
     """experiment name"""
     mode: str = 'online'
     """'offline', 'online', or 'disabled'"""
+    notes: str = ''
 
 
 @dataclass(frozen=True)
