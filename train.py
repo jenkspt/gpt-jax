@@ -144,6 +144,7 @@ def get_default_config() -> TrainConfig:
     path = os.environ.get('GPT_CONFIG', os.path.join('config', 'gpt2.yaml'))
     if not os.path.exists(path):
         return TrainConfig()
+    print(f'using config file at {path}')
     with open(path, 'r') as f:
         return tyro.from_yaml(TrainConfig, f)
 
@@ -220,12 +221,13 @@ if __name__ == "__main__":
             if config.eval_only:
                 break
 
-            if (val_loss < best_val_loss) and jax.process_index() == 0:
+            if (val_loss < best_val_loss):
                 best_val_loss = val_loss
-                # save train state in process 0
-                checkpoints.save_checkpoint(
-                    f'{config.out_dir}/checkpoints/train_state',
-                    unreplicate(train_state), step, keep=config.keep_checkpoints, overwrite=True)
+                if jax.process_index() == 0:
+                    # save train state in process 0
+                    checkpoints.save_checkpoint(
+                        f'{config.out_dir}/checkpoints/train_state',
+                        unreplicate(train_state), step, keep=config.keep_checkpoints, overwrite=True)
                 dataset_manager.save(step)
                 
             if (config.wandb is not None) and (jax.process_index() == 0):
