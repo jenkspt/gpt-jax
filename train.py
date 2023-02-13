@@ -216,20 +216,20 @@ if __name__ == "__main__":
         if step % config.eval_interval == 0:
             val_loss = evaluate(train_state, val_ds, config.batch_size,
                                 block_size, config.eval_steps)
-            
-            if (val_loss < best_val_loss) and not config.eval_only:
+
+            if config.eval_only:
+                break
+
+            if (val_loss < best_val_loss) and jax.process_index() == 0:
                 best_val_loss = val_loss
                 # save train state in process 0
-                checkpoints.save_checkpoint_multiprocess(
+                checkpoints.save_checkpoint(
                     f'{config.out_dir}/checkpoints/train_state',
-                    unreplicate(train_state), step, keep=config.keep_checkpoints)
+                    unreplicate(train_state), step, keep=config.keep_checkpoints, overwrite=True)
                 dataset_manager.save(step)
                 
             if (config.wandb is not None) and (jax.process_index() == 0):
                 wandb.log({"val/loss": val_loss}, step=step)
-
-        if config.eval_only:
-            break
 
         tokens = next(train_iter)._numpy()
         loss, train_state = train_step(train_state, tokens, keys_dropout)
