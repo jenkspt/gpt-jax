@@ -4,7 +4,6 @@ from functools import partial
 import os
 import wandb
 import tyro
-import logging
 
 import jax
 import jax.numpy as jnp
@@ -19,6 +18,10 @@ from model import GPT, GPTConfig
 from dataset import get_dataset
 
 import tensorflow as tf
+
+import logging
+import sys
+logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 
 
 @dataclass(frozen=True)
