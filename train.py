@@ -167,8 +167,7 @@ if __name__ == "__main__":
 
     val_ds = get_dataset(
         config.val_pattern, config.batch_size,
-        block_size, config.shuffle_buffer_size,
-        repeat=1)
+        block_size, repeat=1)
 
     # ===== learning rate schedule =====
     learning_rate = optax.warmup_cosine_decay_schedule(**asdict(config.learning_rate))
