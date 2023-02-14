@@ -129,9 +129,9 @@ def init_train_state(key, config: GPTConfig, optimizer, weight_decay=1e-2, grad_
     params = model.init(key)
 
     optimizer = optax.chain(
-        optax.clip_by_global_norm(grad_clip),
         # Apply weight decay only to non-bias parameters
         optax.add_decayed_weights(weight_decay, mask=param_decay_mask(params)),
+        optax.clip_by_global_norm(grad_clip),
         optimizer,
     )
 
