@@ -64,6 +64,7 @@ class TrainConfig:
     train_steps: int = 150000   # total number of training iterations
     weight_decay: float = 1e-2  # not applied to bias and embedding parameters
     grad_clip: float = 1.0      # gradient norm clipping magnitude
+    gradient_accumulation_steps: int = 1    # used to simulate larger batch sizes
     betas: Tuple[float, float] = (0.9, 0.95) # adamw optimizer betas
     learning_rate: CosineDecayScheduleConfig = field(default_factory=CosineDecayScheduleConfig)
     wandb: WandbConfig = field(default_factory=WandbConfig) # wandb logging
@@ -122,17 +123,17 @@ def param_decay_mask(params: FrozenDict) -> FrozenDict:
     return frozen_dict.freeze(param_mask)
 
 
-def init_train_state(key, config: GPTConfig, optimizer, weight_decay=1e-2, grad_clip=1.0) -> TrainState:
+def init_train_state(key, config: TrainConfig, learning_rate) -> TrainState:
 
-    model = GPT(config)
+    model = GPT(config.model)
 
     params = model.init(key)
 
     optimizer = optax.chain(
         # Apply weight decay only to non-bias parameters
-        optax.add_decayed_weights(weight_decay, mask=param_decay_mask(params)),
-        optax.clip_by_global_norm(grad_clip),
-        optimizer,
+        optax.clip_by_global_norm(config.grad_clip),
+        optax.adamw(learning_rate, *config.betas, weight_decay=config.weight_decay, mask=param_decay_mask(params)),
+        optax.apply_every(config.gradient_accumulation_steps),
     )
 
     train_state = TrainState.create(
@@ -172,9 +173,6 @@ if __name__ == "__main__":
         config.val_pattern, config.batch_size,
         block_size, repeat=1)
 
-    # ===== learning rate schedule =====
-    learning_rate = optax.warmup_cosine_decay_schedule(**asdict(config.learning_rate))
-
     # =====  init parameters ============
     key = jax.random.PRNGKey(config.seed)
     key, key_params, key_dropout = jax.random.split(key, 3)
@@ -182,9 +180,10 @@ if __name__ == "__main__":
     key_dropout = jax.random.fold_in(key_dropout, jax.process_index())
     keys_dropout = jax.random.split(key_dropout, jax.local_device_count())
 
-    optimizer = optax.adamw(learning_rate, *config.betas, weight_decay=0.0)
+    # ===== learning rate schedule =====
+    learning_rate = optax.warmup_cosine_decay_schedule(**asdict(config.learning_rate))
 
-    train_state = init_train_state(key_params, config.model, optimizer, config.weight_decay, config.grad_clip)
+    train_state = init_train_state(key_params, config, learning_rate)
 
     num_params = count_params(train_state.params)
     if jax.process_index() == 0:

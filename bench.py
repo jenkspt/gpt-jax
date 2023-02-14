@@ -1,41 +1,35 @@
 import time
-import numpy as np
+from dataclasses import asdict
 import tyro
 
 import jax
-import jax.numpy as jnp
-import flax
-from flax.training.train_state import TrainState
-from flax.jax_utils import replicate, unreplicate
 import optax
+from flax.jax_utils import replicate
 
-from model import GPT, GPTConfig
 from train import (
     train_step,
     init_train_state,
     count_params,
+    TrainConfig
 )
 from dataset import get_dataset
 
-# -----------------------------------------------------------------------------
 
-def benchmark(
-    pattern: str = "train_??.tfrecord",
-    batch_size: int = 8,
-    seed: int = 1337,
-    model: GPTConfig = GPTConfig()):
+if __name__ == "__main__":
+    config = tyro.cli(TrainConfig)
 
-    block_size = model.block_size
+    block_size = config.model.block_size
 
-    key = jax.random.PRNGKey(seed)
+    key = jax.random.PRNGKey(config.seed)
     key, key_params, key_dropout = jax.random.split(key, 3)
     # make sure dropout keys are different for each device (local and global)
     key_dropout = jax.random.fold_in(key_dropout, jax.process_index())
     keys_dropout = jax.random.split(key_dropout, jax.local_device_count())
 
-    optimizer = optax.adam(3e-4, 0.9, 0.95)
+    # ===== learning rate schedule =====
+    learning_rate = optax.warmup_cosine_decay_schedule(**asdict(config.learning_rate))
 
-    train_state = init_train_state(key_params, model, optimizer)
+    train_state = init_train_state(key_params, config, learning_rate)
 
     num_params = count_params(train_state.params)
     if jax.process_index() == 0:
@@ -45,9 +39,9 @@ def benchmark(
     train_state = replicate(train_state)
 
     train_ds = get_dataset(
-        pattern, batch_size,
+        config.train_pattern, config.batch_size,
         block_size, 64,
-        seed = seed)
+        seed = config.seed)
     train_iter = iter(train_ds)
 
     # simple benchmarking
@@ -63,7 +57,4 @@ def benchmark(
         t1 = time.time()
         if stage == 1:
             print(f"time per iteration: {(t1-t0)/num_steps*1000:.4f}ms")
-            print(f"time per block: {(t1-t0)/num_steps*1000/batch_size/jax.device_count():.4f}ms")
-
-if __name__ == "__main__":
-    tyro.cli(benchmark)
+            print(f"time per block: {(t1-t0)/num_steps*1000/config.batch_size/jax.device_count():.4f}ms")
