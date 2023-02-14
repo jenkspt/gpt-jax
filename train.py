@@ -82,11 +82,11 @@ def train_step(state: TrainState, tokens: jnp.ndarray, dropout_key) -> Tuple[jnp
         return loss
     
     # per-device loss and grads
-    loss, grads = jax.value_and_grad(loss_fn, has_aux=False)(state.params)
-    #loss, grads = jax.value_and_grad(loss_fn, has_aux=False, reduce_axes=('batch',))(state.params)
+    #loss, grads = jax.value_and_grad(loss_fn, has_aux=False)(state.params)
+    loss, grads = jax.value_and_grad(loss_fn, has_aux=False, reduce_axes=('batch',))(state.params)
     # average gradients across devices
-    grads = jax.lax.pmean(grads, axis_name="batch")
-    loss = jax.lax.pmean(loss, axis_name="batch")
+    #grads = jax.lax.pmean(grads, axis_name="batch")
+    #loss = jax.lax.pmean(loss, axis_name="batch")
     new_state = state.apply_gradients(grads=grads)
     return loss, new_state
 
