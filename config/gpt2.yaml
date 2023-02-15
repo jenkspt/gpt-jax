@@ -1,0 +1,37 @@
+# tyro YAML.
+!dataclass:TrainConfig
+seed: 555
+train_pattern: gs://smol-imagen/openwebtext/train_??.tfrecord
+val_pattern: gs://smol-imagen/openwebtext/val_??.tfrecord
+shuffle_buffer_size: 128
+eval_interval: 1000
+eval_steps: 50
+eval_only: False
+keep_checkpoints: 6
+batch_size: 16
+train_steps: 150000
+weight_decay: 1.0e-1
+grad_clip: 1.0
+gradient_accumulation_steps: 1
+betas: 
+  - 0.9
+  - 0.95
+learning_rate: !dataclass:CosineDecayScheduleConfig
+    init_value: 0.0
+    peak_value: 6.4e-4
+    warmup_steps: 1000
+    decay_steps: 150000
+    end_value: 6.4e-5
+wandb: !dataclass:WandbConfig
+    entity: jenkspt
+    project: owt
+    name: gpt-124m
+    mode: online
+model: !dataclass:GPTConfig
+    block_size: 1024
+    vocab_size: 50304
+    num_layers: 12
+    num_heads: 12
+    num_embeds: 768
+    dropout_rate: 0.0
+    dtype: bfloat16
