@@ -56,6 +56,6 @@ if __name__ == "__main__":
             #print(f"{k}/{num_steps} loss: {loss:.4f}")
         loss.block_until_ready()
         t1 = time.time()
-        if stage == 1:
+        if stage == 1 and jax.process_index() == 0:
             print(f"time per iteration: {(t1-t0)/num_steps*1000:.4f}ms")
             print(f"time per block: {(t1-t0)/num_steps*1000/config.batch_size/jax.device_count():.4f}ms")
