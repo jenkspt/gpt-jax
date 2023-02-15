@@ -69,6 +69,7 @@ class TrainConfig:
     learning_rate: CosineDecayScheduleConfig = field(default_factory=CosineDecayScheduleConfig)
     wandb: WandbConfig = field(default_factory=WandbConfig) # wandb logging
     model: GPTConfig = field(default_factory=GPTConfig)     # gpt model config
+    remat: bool = False    # set to True to rematerialize gradients during backward pass
 
 
 @partial(jax.pmap, axis_name='batch')
@@ -125,7 +126,12 @@ def param_decay_mask(params: FrozenDict) -> FrozenDict:
 
 def init_train_state(key, config: TrainConfig, learning_rate) -> TrainState:
 
-    model = GPT(config.model)
+    if config.remat:
+        model = flax.linen.remat(GPT,
+            static_argnums=(2,),
+            policy=jax.checkpoint_policies.checkpoint_dots_with_no_batch_dims)(config.model)
+    else:
+        model = GPT(config.model)
 
     params = model.init(key)
 

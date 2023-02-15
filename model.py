@@ -28,7 +28,6 @@ class SelfAttention(nn.Module):
     deterministic: Optional[bool] = None
     use_proj_bias: bool = True
 
-    #@partial(nn.remat, policy=jax.checkpoint_policies.checkpoint_dots_with_no_batch_dims)
     @nn.compact
     def __call__(self, x, mask, deterministic=None):
         B, T, C = x.shape
