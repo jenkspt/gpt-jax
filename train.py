@@ -127,9 +127,7 @@ def param_decay_mask(params: FrozenDict) -> FrozenDict:
 def init_train_state(key, config: TrainConfig, learning_rate) -> TrainState:
 
     if config.remat:
-        model = flax.linen.remat(GPT,
-            static_argnums=(2,),
-            policy=jax.checkpoint_policies.checkpoint_dots_with_no_batch_dims)(config.model)
+        model = flax.linen.remat(GPT, static_argnums=(2,))(config.model)
     else:
         model = GPT(config.model)
 
