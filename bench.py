@@ -10,13 +10,14 @@ from train import (
     train_step,
     init_train_state,
     count_params,
-    TrainConfig
+    TrainConfig,
+    get_default_config,
 )
 from dataset import get_dataset
 
 
 if __name__ == "__main__":
-    config = tyro.cli(TrainConfig)
+    config = tyro.cli(TrainConfig, default=get_default_config())
 
     block_size = config.model.block_size
 
