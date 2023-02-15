@@ -21,7 +21,7 @@ import tensorflow as tf
 
 import logging
 import sys
-logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
+logging.basicConfig(stream=sys.stdout, level=logging.INFO)
 
 
 @dataclass(frozen=True)
