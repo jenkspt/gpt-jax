@@ -16,6 +16,7 @@ class GPTConfig:
     num_heads: int = 12
     num_embeds: int = 768
     dropout_rate: float = 0.1
+    use_bias: bool = True
     dtype: Optional[str] = None
 
 
@@ -25,6 +26,7 @@ class SelfAttention(nn.Module):
     dtype: Any = jnp.float32
     dropout_rate: float = 0.1
     deterministic: Optional[bool] = None
+    use_proj_bias: bool = True
 
     #@partial(nn.remat, policy=jax.checkpoint_policies.checkpoint_dots_with_no_batch_dims)
     @nn.compact
@@ -34,7 +36,7 @@ class SelfAttention(nn.Module):
         head_dim = C // self.num_heads
         deterministic = nn.merge_param('deterministic', self.deterministic, deterministic)
 
-        qkv = nn.Dense(3 * C, dtype=self.dtype, name='c_attn')(x)
+        qkv = nn.Dense(3 * C, use_bias=self.use_proj_bias, dtype=self.dtype, name='c_attn')(x)
         qkv = qkv.reshape(B, T, 3 * self.num_heads, head_dim)
         q, k, v = jnp.array_split(qkv, 3, axis=2)
         # calculate attention matrix
@@ -47,7 +49,7 @@ class SelfAttention(nn.Module):
 
         # return weighted sum over values for each query position
         x = jnp.einsum('...hqk,...khd->...qhd', attn, v).reshape(B, T, C)
-        x = nn.Dense(C, dtype=self.dtype, name='c_proj')(x)
+        x = nn.Dense(C, use_bias=self.use_proj_bias, dtype=self.dtype, name='c_proj')(x)
 
         x = nn.Dropout(rate=self.dropout_rate)(x, deterministic=deterministic)
         return x
@@ -59,9 +61,9 @@ class MLP(nn.Module):
     @nn.compact
     def __call__(self, x, deterministic=None):
         B, T, C = x.shape
-        x = nn.Dense(4 * C, dtype=self.config.dtype, name='c_fc')(x)
+        x = nn.Dense(4 * C, dtype=self.config.dtype, use_bias=self.config.use_bias, name='c_fc')(x)
         x = nn.gelu(x, approximate=True)
-        x = nn.Dense(C, dtype=self.config.dtype, name='c_proj')(x)
+        x = nn.Dense(C, dtype=self.config.dtype, use_bias=self.config.use_bias, name='c_proj')(x)
         x = nn.Dropout(self.config.dropout_rate)(x, deterministic)
         return x
 
@@ -70,11 +72,11 @@ class Block(nn.Module):
     config: GPTConfig
 
     def setup(self):
-        self.ln_1 = nn.LayerNorm(dtype=self.config.dtype)
+        self.ln_1 = nn.LayerNorm(epsilon=1e-5, dtype=self.config.dtype, use_bias=self.config.use_bias)
         self.attn = SelfAttention(self.config.num_heads,
                                   self.config.dtype,
                                   dropout_rate=self.config.dropout_rate)
-        self.ln_2 = nn.LayerNorm(dtype=self.config.dtype)
+        self.ln_2 = nn.LayerNorm(epsilon=1e-5, dtype=self.config.dtype, use_bias=self.config.use_bias)
         self.mlp = MLP(self.config)
 
     def __call__(self, x, mask=None, deterministic=None):
@@ -104,7 +106,7 @@ class GPT(nn.Module):
         for i in range(self.config.num_layers):
             x = Block(self.config, name=str(i))(x, attn_mask, deterministic=deterministic)
 
-        x = nn.LayerNorm(dtype=self.config.dtype, name='ln_f')(x)
+        x = nn.LayerNorm(1e-5, dtype=self.config.dtype, use_bias=self.config.use_bias, name='ln_f')(x)
         logits = wte.attend(x)
         return logits
 
